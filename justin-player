@@ -1,0 +1,559 @@
+# !/bin/bash
+
+# justin-player by Witold Pilat <witold.pilat@gmail.com>
+
+#        Usage: justin-player [OPTIONS] [CHANNEL]
+
+#  Description: Interactive CLI program to browse, watch and download
+#               recorded videos from justin.tv, twitch.tv and other
+#               sites using justin.tv API.
+
+#      Version: 1.3
+
+# Dependencies: bash 4.x (3.x should be enough)
+#               wget (optional)
+#               media player (optional)
+#               xclip or xsel (optional)
+
+# Copyright (C) 2013 Witold Pilat
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+#
+# DATA
+#
+
+JUSTIN_API="http://api.justin.tv/api/channel/archives/"
+OFFSET=0
+LIMIT=20
+TITLE=""
+URL=""
+DATE=""
+SIZE=""
+
+#
+# FUNCTIONS
+#
+
+# Trim leading and trailing spaces
+trim () {
+    echo $*
+}
+
+isnumber () {
+    [ "$1" -eq "$1" 2> /dev/null ]
+}
+
+positive () {
+    if [ "${1:0:1}" = "-" ]; then
+	echo "0"
+    else
+	echo "$1"
+    fi
+}
+
+sequence () {
+    echo $(eval echo {${1}..${2}})
+}
+
+set_file_name () {
+    file_name="${TITLE[$1]} (${DATE[$1]}).flv"
+}
+
+command_exists () {
+    command -v $1 > /dev/null 2>&1
+}
+
+error () {
+    echo -e "$@" >&2
+}
+
+set_text_format () {
+    command_exists tput              &&
+    bold=$(tput bold 2> /dev/null)   &&
+    normal=$(tput sgr0 2> /dev/null) ||
+    { bold=""; normal=""; }
+}
+
+read_config () {
+    local IFS='= '
+    while read variable value; do
+	case $variable in
+	    LIMIT)
+		LIMIT="$value"
+		;;
+	    PLAYER)
+		PLAYER="$value"
+		;;
+	    DOWNLOAD_DIR)
+		DOWNLOAD_DIR=$(eval echo $value)
+		;;
+	esac
+    done
+}
+
+load_config () {
+    if [ -f ${XDG_CONFIG_HOME}/justin-player.conf ]; then
+        read_config < ${XDG_CONFIG_HOME}/justin-player.conf
+    elif [ -f ${HOME}/.config/justin-player.conf ]; then
+        read_config < ${HOME}/.config/justin-player.conf
+    elif [ -f ${HOME}/.justin-player.conf ]; then
+        read_config < ${HOME}/.justin-player.conf
+    fi
+}
+
+finish () {
+        [ -e $TEMPFILE ] && rm --force $TEMPFILE
+}
+
+set_options () {
+    command_exists mplayer && PLAYER=${PLAYER:-mplayer}
+    command_exists vlc && PLAYER=${PLAYER:-vlc}
+    error_msg_player="\nCannot find media player. Try \`justin-player --help'\n"
+    PLAYER=${PLAYER:-"error ${error_msg_player}"}
+
+    if [ "$LIMIT" = "auto" ]; then
+       command_exists tput && LINES=${LINES:=$(tput lines 2> /dev/null)}
+       isnumber "$LINES" || LINES=24
+       let LIMIT=${LINES}-4
+    fi
+
+    trap finish EXIT
+    TEMPFILE=$(mktemp --tmpdir justin.XXX) ||
+    { error "$0: Creation of temporary file failed!"; exit 1; }
+
+    if command_exists getconf; then
+	NAME_MAX=$(getconf NAME_MAX "$DOWNLOAD_DIR" 2> /dev/null)
+    fi
+    if ! isnumber "$NAME_MAX"; then
+	NAME_MAX=255
+    fi
+
+    if [ -c /dev/clipboard ]; then
+    	CLIP_PRIMARY="> /dev/null 2>&1"
+    	CLIP_CLIPBOARD="> /dev/clipboard"
+    elif command_exists xclip; then
+        CLIP_PRIMARY="| xclip -selection primary"
+        CLIP_CLIPBOARD="| xclip -selection clipboard"
+    elif command_exists xsel; then
+        CLIP_PRIMARY="| xsel --primary --input"
+        CLIP_CLIPBOARD="| xsel --clipboard --input"
+    else
+        CLIP_PRIMARY=""
+        CLIP_CLIPBOARD="| return 1"
+    fi
+}
+
+input_channel () {
+    unset TITLE DATE URL SIZE
+    while ! get_list; do
+	echo "${bold}Type channel name${normal}"
+	read -e -p "> " CHANNEL
+	history -s $CHANNEL
+    done
+}
+
+read_dom () {
+    local IFS=\>
+    read -d \< entity content
+}
+
+get_list () {
+    if [ -z "$CHANNEL" ]; then
+    	return 1
+    fi
+    wget --quiet                      \
+	--output-document "$TEMPFILE" \
+        "${JUSTIN_API}${CHANNEL}.xml?limit=${LIMIT}&offset=${OFFSET}"
+    if [ $? -ne 0 ]; then
+	error "Unable to retrieve channel info"
+	echo ""
+	return 1
+    fi
+
+    NUM=${OFFSET:=0}
+    while read_dom; do
+        case $entity in
+            object)
+                let NUM++
+                ;;
+            title)
+                TITLE[$NUM]="$content"
+                ;;
+            video_file_url)
+                URL[$NUM]="$content"
+                ;;
+            start_time)
+                DATE[$NUM]="$content"
+                ;;
+	    file_size)
+		SIZE[$NUM]="$content"
+		;;
+        esac
+    done < $TEMPFILE
+}
+
+print_list () {
+    if [ "$NUM" -ne "$OFFSET" ]; then
+	for i in $(sequence $((OFFSET+1)) $NUM); do
+	    set_file_name $i
+	    if [ -f "${DOWNLOAD_DIR}/${CHANNEL}/${file_name}" ]; then
+		file_size=$(stat -c %s "${DOWNLOAD_DIR}/${CHANNEL}/${file_name}")
+		if [ "$file_size" -eq "${SIZE[$i]}" ]; then
+	    	    status="*"
+	    	else
+	    	    status="+"
+	    	fi
+	    elif [ -f "${DOWNLOAD_DIR}/${CHANNEL}/${URL[$i]##*/}" ]; then
+		file_size=$(stat -c %s "${DOWNLOAD_DIR}/${CHANNEL}/${URL[$i]##*/}")
+		if [ "$file_size" -eq "${SIZE[$i]}" ]; then
+	    	    status="*"
+	    	else
+	    	    status="+"
+	    	fi
+	    else
+	    	status=" "
+	    fi
+
+            echo "[${status}] ${bold}${i}${normal}. ${TITLE[$i]} (${DATE[$i]})"
+	done
+	echo ""
+    else
+	echo "${bold}No videos avaible!${normal}"
+	echo ""
+    fi
+}
+
+play () {
+    set_file_name $1
+    video="${DOWNLOAD_DIR}/${CHANNEL}/${file_name}"
+    if [ ! -f "$video" ]; then
+	video="${DOWNLOAD_DIR}/${CHANNEL}/${URL[$1]##*/}"
+	if [ ! -f "$video" ]; then
+	    video="${URL[$1]}"
+	fi
+    fi
+
+    trap "echo -e '\nPlayback interrupted\n'; ret=1" INT
+    echo ""
+    $PLAYER "$video"
+    ret=$?
+    trap - INT
+    return $ret
+}
+
+copy () {
+    CLIPBOARD="${CLIPBOARD}${URL[$1]}\n"
+}
+
+download () {
+    if [ ! -d "$DOWNLOAD_DIR" ]; then
+	error "${DOWNLOAD_DIR}: Directory doesn't exist!"
+	return 1
+    fi
+
+    [ -d "${DOWNLOAD_DIR}/${CHANNEL}" ] ||
+    mkdir "${DOWNLOAD_DIR}/${CHANNEL}" ||
+    return 1
+
+    set_file_name $1
+    trap "echo -e '\nDownload interrupted\n'; ret=1" INT
+    if [ "${file_name}" != ".flv" ] && [ ${#file_name} -le $NAME_MAX ]; then
+    	wget --continue                                                 \
+    	    --output-document "${DOWNLOAD_DIR}/${CHANNEL}/${file_name}" \
+    	    "${URL[$1]}"
+    else
+	wget --continue                                     \
+	    --directory-prefix "${DOWNLOAD_DIR}/${CHANNEL}" \
+	    "${URL[$1]}"
+    fi
+    ret=$?
+    trap - INT
+    return $ret
+}
+
+remove () {
+    set_file_name $1
+    rm --force "${DOWNLOAD_DIR}/${CHANNEL}/${file_name}"
+    rm --force "${DOWNLOAD_DIR}/${CHANNEL}/${URL[$1]##*/}"
+    rm --dir "${DOWNLOAD_DIR}/${CHANNEL}" 2> /dev/null
+    return 0
+}
+
+test_sequence () {
+    for i in $1; do
+        case $i in
+            *-*)
+                isnumber "${i%-*}"  || return 1
+                isnumber "${i#*-}"  || return 1
+                ;;
+            *..*)
+                isnumber "${i%..*}" || return 1
+                isnumber "${i#*..}" || return 1
+                ;;
+            *)
+                isnumber "$i"       || return 1
+                ;;
+        esac
+    done
+}
+
+perform_action () {
+    if ! test_sequence "$input"; then
+	echo -e "\nIncorrect input sequence\n"
+	return 1
+    fi
+    for i in $input; do
+        case $i in
+            *-*)
+                for j in $(sequence ${i%-*} ${i#*-}); do
+                    if [ -n "${URL[$j]}" ]; then
+			$1 $j || return $?
+		    fi
+                done
+                ;;
+            *..*)
+                for j in $(sequence ${i%..*} ${i#*..}); do
+                    if [ -n "${URL[$j]}" ]; then
+			$1 $j || return $?
+		    fi
+                done
+                ;;
+            *)
+                if [ -n "${URL[$i]}" ]; then
+		    $1 $i || return $?
+		fi
+                ;;
+        esac
+    done
+}
+
+input_main () {
+    message_continue="${bold}Press enter to continue...${normal}"
+    echo "${bold}Select one or more videos to play (:h for help)${normal}"
+    read -e -p "> " input
+    history -s "$input"
+    echo ""
+
+    case $input in
+        :h)
+	    cat <<EOF
+:n(ext)            : next page
+:b(ack)            : previous page
+:o(ffset) <number> : list videos starting from <number>
+
+<number>           : play video <number>
+2 5 6 8 1          : play videos in corresponding order
+1-4                : play videos 1 2 3 4
+4..1               : play videos 4 3 2 1
+7-5 4 1..3         : play videos 7 6 5 4 1 2 3
+
+:d 2 8-5 23        : start or resume downloading videos in corresponding order
+:c 3-1 30 2        : copy videos' links to clipboard and primary selection
+:r 4..8 1 9        : remove videos
+:r *               : remove all videos from current channel
+
+:g(oto)            : go to new channel
+
+:q(uit)            : quit
+
+Legend:
+[+] : Partially downloaded video
+[*] : Fully downloaded video
+
+Notes:
+1. Command-line provides standard readline navigation (Ctrl-a, Ctrl-e etc.)
+   and history (arrows, Ctrl-p, Ctrl-n etc.) shortcuts.
+
+EOF
+            read -p "$message_continue"
+            ;;
+        :n|:next)
+            let OFFSET=OFFSET+LIMIT
+            get_list
+            ;;
+        :b|:back)
+            OFFSET=$(positive $((OFFSET-LIMIT)))
+            get_list
+            ;;
+	:offset*)
+	    if isnumber "${input:7}"; then
+		OFFSET=$(positive "${input:7}")
+		let OFFSET--
+		get_list
+	    fi
+	    ;;
+	# Use ;& in bash 4
+	:o*)
+	    if isnumber "${input:2}"; then
+		OFFSET=$(positive $((${input:2}-1)))
+		get_list
+	    fi
+	    ;;
+        :d*)
+            input=${input:2}
+            perform_action download || read -p "$message_continue"
+            ;;
+        :c*)
+            input=${input:2}
+            CLIPBOARD=""
+            perform_action copy
+            eval "echo -e \"$CLIPBOARD\" $CLIP_PRIMARY" &&
+            eval "echo -e \"$CLIPBOARD\" $CLIP_CLIPBOARD" ||
+	    read -p "$message_continue"
+            ;;
+	":r *")
+	    read -p "Remove ${DOWNLOAD_DIR}/${CHANNEL} recursively? [y/n] " answer
+	    if [ "$answer" = "y" ]; then
+		rm --recursive "${DOWNLOAD_DIR}/${CHANNEL}"
+	    fi
+	    ;;
+	:r*)
+	    input=${input:2}
+	    perform_action remove
+	    ;;
+	:g|:goto)
+	    unset CHANNEL OFFSET
+	    input_channel
+	    ;;
+        :q|:quit)
+	    exit
+            ;;
+        [1-9]*)
+            perform_action play || read -p "$message_continue"
+            ;;
+	"")
+	    ;;
+        *)
+	    echo "Unrecognised command"
+	    read -p "$message_continue"
+            ;;
+    esac
+}
+
+usage () {
+    cat >&2 <<EOF
+Usage: justin-player [OPTIONS] [CHANNEL]
+
+Try \`justin-player --help' for more options
+EOF
+}
+
+parse_arguments () {
+    # change long options to short options
+    for arg; do
+    	[[ "${arg:0:1}" == "-" ]] && delim="" || delim="\""
+    	if [ "${arg:0:2}" == "--" ];
+    	then args="${args} -${arg:2:1}"
+    	else args="${args} ${delim}${arg}${delim}"
+    	fi
+    done
+
+    # reset the incoming args
+    eval set -- $args
+
+    while getopts hvp:r:d:no: opt; do
+	case $opt in
+	    h)
+		cat <<EOF
+Usage:   justin-player [OPTIONS] [CHANNEL]
+
+Interactive CLI program to browse, watch and download recorded videos
+from justin.tv, twitch.tv and other sites using justin.tv API.
+
+Example: justin-player faceittv
+Warning: Channel name can be found in stream's url and may be
+         different from name displayed on webpage.
+
+Options:
+  -p, --player PLAYER    command-line for media player
+  -o, --offset NUMBER    show videos starting from offset
+  -r, --results NUMBER   maximum number of results per page
+  -d, --download-dir DIR directory for downloaded videos
+  -n, --nocolor          do not use ANSI color codes
+
+Note:    All command-line arguments can be permanently set in configuration
+         file located in one of these places:
+         ${XDG_CONFIG_HOME}/justin-player.conf
+         ${HOME}/.config/justin-player.conf
+         ${HOME}/.justin-player.conf
+
+Report bugs to: <witold.pilat@gmail.com>
+EOF
+		exit
+		;;
+	    v)
+		cat <<EOF
+justin-player 1.3
+
+Copyright (C) 2013 Witold Pilat
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+EOF
+		exit
+		;;
+	    p)
+		PLAYER="$OPTARG"
+		;;
+	    o)
+		if ! isnumber "$OPTARG" || [ "$OPTARG" -le 0 ]; then
+		    error "Invalid offset: ${OPTARG}"
+		    exit 1
+		fi
+		let OFFSET=$OPTARG-1
+		;;
+	    r)
+		if ! isnumber "$OPTARG" || [ "$OPTARG" -le 0 ]; then
+		    error "Invalid results per page: $OPTARG"
+		    exit 1
+		fi
+		LIMIT="$OPTARG"
+		;;
+	    d)
+		DOWNLOAD_DIR=$OPTARG
+		;;
+	    n)
+		bold=""
+		normal=""
+		;;
+	    \?)
+		usage
+		exit 1
+		;;
+	    :)
+		usage
+		exit 1
+		;;
+	esac
+    done
+
+    shift $(($OPTIND-1))
+    CHANNEL=$1
+}
+
+#
+# MAIN CODE
+#
+
+set_text_format
+load_config
+parse_arguments "$@"
+set_options
+input_channel
+
+while print_list; do
+    input_main
+done
