@@ -25,10 +25,10 @@ Git Repository
 --------------
 
 gitweb: https://github.com/aufau/justin-player
+
 clone: git://github.com/aufau/justin-player.git
 
 Bugs
 ----
 
 Please report bugs on github's issue tracker
-or send them to <witold.pilat@gmail.com>
