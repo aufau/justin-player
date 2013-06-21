@@ -312,7 +312,7 @@ test_sequence () {
 
 perform_action () {
     if ! test_sequence "$input"; then
-	echo -e "\nIncorrect input sequence\n"
+	echo "Incorrect input sequence"
 	return 1
     fi
     for i in $input; do
@@ -490,7 +490,8 @@ Note:    All command-line arguments can be permanently set in configuration
          ${HOME}/.config/justin-player.conf
          ${HOME}/.justin-player.conf
 
-Report bugs to: <witold.pilat@gmail.com>
+Report bugs to:  <https://github.com/aufau/justin-player/issues>
+Or send them to: <witold.pilat@gmail.com>
 EOF
 		exit
 		;;
