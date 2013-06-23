@@ -5,13 +5,13 @@
 #        Usage: justin-player [OPTIONS] [CHANNEL]
 
 #  Description: Interactive CLI program to browse, watch and download
-#               recorded videos from justin.tv, twitch.tv and other
-#               sites using justin.tv API.
+#               recorded videos from justin.tv and other sites using
+#               justin.tv API.
 
 #      Version: 1.3
 
 # Dependencies: bash 4.x (3.x should be enough)
-#               wget (optional)
+#               wget
 #               media player (optional)
 #               xclip or xsel (optional)
 
@@ -471,9 +471,9 @@ parse_arguments () {
 Usage:   justin-player [OPTIONS] [CHANNEL]
 
 Interactive CLI program to browse, watch and download recorded videos
-from justin.tv, twitch.tv and other sites using justin.tv API.
+from justin.tv and other sites using justin.tv API.
 
-Example: justin-player faceittv
+Example: justin-player crazy_american
 Warning: Channel name can be found in stream's url and may be
          different from name displayed on webpage.
 

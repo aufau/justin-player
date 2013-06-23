@@ -17,7 +17,7 @@ Dependencies
 ------------
 
 * Bash 4.x (3.x should be ok)
-* wget (optional)
+* wget
 * media player (optional)
 * xclip or xsel (optional)
 
