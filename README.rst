@@ -5,8 +5,8 @@ Description
 -----------
 
 justin-player is an interactive CLI program to browse, watch and
-download videos recorded on justin.tv, twitch.tv and other sites using
-justin.tv API.
+download videos recorded on justin.tv and other sites using justin.tv
+API.
 
 Usage
 -----
